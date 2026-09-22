@@ -32,7 +32,7 @@ try{
  assert.equal((await request(a,'jobs/test0','PATCH',{status:'已投遞',note:'synthetic note'})).status,200);
  assert.equal((await request(a,'jobs?tab=history')).data.total,1);assert.equal((await request(b,'jobs/test0/history')).data.results.length,0);
  const zipResponse=await localFetch(base+'/api/extension',{headers:{'oai-authenticated-user-id':a,'oai-authenticated-user-email':a+'@example.test'}});assert.equal(zipResponse.status,200);
- const zip=unzipSync(new Uint8Array(await zipResponse.arrayBuffer())),manifest=JSON.parse(strFromU8(zip['manifest.json']));assert.equal(manifest.content_scripts[0].matches[0],'https://career-compass-104.noble-goat-8482.chatgpt.site/*');assert.equal(manifest.permissions.includes('cookies'),false);
+ const zip=unzipSync(new Uint8Array(await zipResponse.arrayBuffer())),manifest=JSON.parse(strFromU8(zip['manifest.json']));assert.equal(manifest.content_scripts[0].matches[0],'https://career-compass-104.attewfg.chatgpt.site/*');assert.equal(manifest.permissions.includes('cookies'),false);
  assert.equal((await localFetch(base+'/api/extension')).status,401);
  assert.equal((await request(a,'profile','PUT',profile,'https://evil.example')).status,403);
  await request(a,'profile');

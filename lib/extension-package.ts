@@ -2,7 +2,7 @@ import { zipSync, strToU8 } from 'fflate';
 import bridge from '../extension/bridge.js?raw';
 import background from '../extension/background.js?raw';
 import collector from '../extension/collector.js?raw';
-export const SITE_ORIGIN='https://career-compass-104.noble-goat-8482.chatgpt.site';
+export const SITE_ORIGIN='https://career-compass-104.attewfg.chatgpt.site';
 export const EXTENSION_VERSION='2.0.0';
 export function extensionZip(origin=SITE_ORIGIN) {
   if(![SITE_ORIGIN,'http://localhost:5175'].includes(origin)) throw new Error('Unknown site origin');
