@@ -6,5 +6,5 @@ export const jobSchema = z.object({
   salary_text: z.string().max(200), salary_min: z.number().finite().min(0).max(100000000).nullable(), salary_max: z.number().finite().min(0).max(100000000).nullable(), years_required: z.number().finite().min(0).max(100).nullable(),
   publish_time: z.string().refine(v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0,10) === v && v <= new Date().toISOString().slice(0,10)), '發布日期無效'),
 }).strict().refine(j => j.salary_min === null || j.salary_max === null || j.salary_min <= j.salary_max, '薪資範圍無效').transform(j => ({ ...j, id: j.url.split('/').pop()!.toLowerCase() }));
-export const finishSchema = z.object({ jobs: z.array(jobSchema).max(50), raw: z.number().int().min(0).max(10000), emptyConfirmed: z.boolean().optional() }).strict();
+export const finishSchema = z.object({ jobs: z.array(jobSchema).max(100), raw: z.number().int().min(0).max(10000), emptyConfirmed: z.boolean().optional() }).strict();
 export const states = ['未讀取','已讀','已投遞','篩除'] as const;

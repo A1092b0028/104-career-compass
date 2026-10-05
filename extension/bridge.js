@@ -2,14 +2,12 @@
 window.addEventListener('message', event => {
   if(event.source!==window || event.origin!==location.origin) return;
   const msg=event.data;
-  if(msg?.type==='COMPASS_PING') {
-    window.postMessage({type:'COMPASS_READY',id:msg.id,version:chrome.runtime.getManifest().version},location.origin); return;
-  }
-  if(msg?.type!=='COMPASS_REFRESH' || typeof msg.id!=='string') return;
-  chrome.runtime.sendMessage({type:'COMPASS_REFRESH',id:msg.id,profile:msg.profile},result=>{
+  if(!['COMPASS_PING','COMPASS_REFRESH'].includes(msg?.type) || typeof msg.id!=='string') return;
+  const reply=result=>window.postMessage({type:msg.type==='COMPASS_PING'?'COMPASS_READY':'COMPASS_RESULT',id:msg.id,...result},location.origin);
+  try{chrome.runtime.sendMessage({type:msg.type,id:msg.id,profile:msg.profile},result=>{
     const error=chrome.runtime.lastError?.message;
-    window.postMessage({type:'COMPASS_RESULT',id:msg.id,...(error?{error:'更新助手中斷，請重新載入網站後重試。'}:result)},location.origin);
-  });
+    reply(error||!result?{error:'更新助手連線中斷，請到 Chrome／Edge 擴充功能頁重新載入助手，再重新整理網站。'}:result);
+  });}catch{reply({error:'更新助手已重新載入，請重新整理網站後重試。'});}
 });
 chrome.runtime.onMessage.addListener(msg=>{
   if(msg?.type==='COMPASS_PROGRESS') window.postMessage(msg,location.origin);

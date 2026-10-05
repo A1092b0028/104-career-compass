@@ -3,7 +3,24 @@ import { emptyProfile, score, type Profile, type Job } from './matching';
 export class StoreError extends Error { constructor(public status: number, message: string) { super(message); } }
 const stamp = () => new Date().toISOString();
 type Batch = {id:string;user_id:string;profile:string;requested:number;status:string;started:string;raw:number;imported:number;finished:string|null;error:string|null};
+async function scrubLegacyBatches(db:D1Database) {
+  if(await db.prepare("SELECT key FROM maintenance WHERE key='terminal-batches-v1'").first()) return;
+  await db.batch([
+    db.prepare("UPDATE batches SET profile='{}' WHERE status IN ('done','failed') AND profile<>'{}'"),
+    db.prepare(`DELETE FROM batches WHERE status IN ('done','failed')
+      AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY started DESC,id DESC) AS rank FROM batches WHERE status IN ('done','failed')) WHERE rank<=50)
+      AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY finished DESC,id DESC) AS rank FROM batches WHERE status='done') WHERE rank=1)`),
+    db.prepare("INSERT INTO maintenance(key,completed) VALUES('terminal-batches-v1',?) ON CONFLICT(key) DO NOTHING").bind(stamp()),
+  ]);
+}
 export async function getProfile(db:D1Database, owner:string) {
+  await scrubLegacyBatches(db);
+  const at=stamp(), expires=new Date(Date.now()-240000).toISOString();
+  await db.batch([
+    db.prepare("UPDATE batches SET status='failed',active=NULL,profile='{}',error='更新逾時',finished=? WHERE user_id=? AND active=1 AND started<?").bind(at,owner,expires),
+    db.prepare("UPDATE batches SET profile='{}' WHERE user_id=? AND status IN ('done','failed') AND profile<>'{}'").bind(owner),
+    db.prepare("DELETE FROM batches WHERE user_id=? AND status IN ('done','failed') AND id NOT IN (SELECT id FROM batches WHERE user_id=? ORDER BY started DESC,id DESC LIMIT 50) AND id NOT IN (SELECT id FROM batches WHERE user_id=? AND status='done' ORDER BY finished DESC,id DESC LIMIT 1)").bind(owner,owner,owner),
+  ]);
   const row = await db.prepare('SELECT data FROM profiles WHERE user_id=?').bind(owner).first<{data:string}>();
   return {profile:row ? JSON.parse(row.data) as Profile : emptyProfile, configured:!!row};
 }
@@ -15,7 +32,27 @@ export async function saveProfile(db:D1Database, owner:string, p:Profile) {
 }
 export async function deleteAccount(db:D1Database,owner:string) {
   // Explicit deletion also works in environments where FK enforcement is disabled.
-  await db.batch(['history','jobs','batches','profiles'].map(t=>db.prepare(`DELETE FROM ${t} WHERE user_id=?`).bind(owner)).concat(db.prepare('DELETE FROM users WHERE id=?').bind(owner)));
+  await db.batch([...['history','jobs','batches','profiles'].map(t=>db.prepare(`DELETE FROM ${t} WHERE user_id=?`).bind(owner)),db.prepare('DELETE FROM users WHERE id=?').bind(owner)]);
+}
+export async function withAnalysisPermit<T>(db:D1Database,owner:string,work:()=>Promise<T>):Promise<T> {
+  const now=Date.now(), id=crypto.randomUUID();
+  // Preserve short-lived limits across account deletion without retaining the raw identity.
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(owner));
+  const userKey=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+  await db.prepare('DELETE FROM ai_requests WHERE started<?').bind(now-86400000).run();
+  const admitted=await db.prepare(`INSERT INTO ai_requests(id,user_key,started,expires,released)
+    SELECT ?,?,?,?,NULL WHERE
+    (SELECT COUNT(*) FROM ai_requests WHERE user_key=? AND started>=?)<10 AND
+    (SELECT COUNT(*) FROM ai_requests WHERE started>=?)<80 AND
+    (SELECT COUNT(*) FROM ai_requests WHERE user_key=? AND released IS NULL AND expires>?)<1 AND
+    (SELECT COUNT(*) FROM ai_requests WHERE released IS NULL AND expires>?)<5`)
+    .bind(id,userKey,now,now+90000,userKey,now-3600000,now-86400000,userKey,now,now).run();
+  if(admitted.meta.changes!==1) throw new StoreError(429,'AI 分析使用量或同時執行數已達測試站上限，請稍後再試。');
+  try { return await work(); }
+  finally {
+    try { await db.prepare('UPDATE ai_requests SET released=? WHERE id=?').bind(Date.now(),id).run(); }
+    catch { console.error('AI analysis permit release failed'); } // The lease expires after 90 seconds if a Worker stops.
+  }
 }
 export async function createBatch(db:D1Database,owner:string,count:number) {
   const at=stamp(), expires=new Date(Date.now()-240000).toISOString(), id=crypto.randomUUID();
@@ -24,7 +61,7 @@ export async function createBatch(db:D1Database,owner:string,count:number) {
   const latest=await db.prepare('SELECT started FROM batches WHERE user_id=? ORDER BY started DESC LIMIT 1').bind(owner).first<{started:string}>();
   if(latest && Date.now()-Date.parse(latest.started)<10000) throw new StoreError(429,'請隔 10 秒再更新。');
   try { await db.batch([
-    db.prepare("UPDATE batches SET status='failed',active=NULL,error='更新逾時',finished=? WHERE user_id=? AND active=1 AND started<?").bind(at,owner,expires),
+    db.prepare("UPDATE batches SET status='failed',active=NULL,profile='{}',error='更新逾時',finished=? WHERE user_id=? AND active=1 AND started<?").bind(at,owner,expires),
     db.prepare("INSERT INTO batches(id,user_id,profile,requested,status,active,started) VALUES(?,?,?,?,'running',1,?)").bind(id,owner,JSON.stringify(profile),count,at),
   ]); } catch(e) { if(String(e).includes('UNIQUE')) throw new StoreError(409,'已有更新正在進行，請等待完成或四分鐘後重試。'); throw e; }
   // Only public search criteria cross the extension boundary; the resume stays on the site.
@@ -36,13 +73,13 @@ export async function getBatch(db:D1Database,owner:string,id:string) {
 }
 export async function failBatch(db:D1Database,owner:string,id:string,error:string) {
   await getBatch(db,owner,id);
-  await db.prepare("UPDATE batches SET status='failed',active=NULL,error=?,finished=? WHERE user_id=? AND id=? AND status='running'").bind(error,stamp(),owner,id).run();
+  await db.prepare("UPDATE batches SET status='failed',active=NULL,profile='{}',error=?,finished=? WHERE user_id=? AND id=? AND status='running'").bind(error,stamp(),owner,id).run();
 }
 export async function finishBatch(db:D1Database,owner:string,id:string,input:{jobs:Job[];raw:number;emptyConfirmed?:boolean}) {
   const batch=await getBatch(db,owner,id);
   if(batch.status==='done') return {imported:batch.imported,raw:batch.raw,id};
   if(batch.status!=='running' || Date.now()-Date.parse(batch.started)>240000) throw new StoreError(409,'批次已結束或逾時，請重新更新。');
-  if(input.jobs.length>batch.requested || input.raw<input.jobs.length || (!input.jobs.length&&!input.emptyConfirmed)) throw new StoreError(400,'讀取筆數無效，或未確認搜尋結果為空。');
+  if(input.jobs.length>100 || input.raw<input.jobs.length || (!input.jobs.length&&!input.emptyConfirmed)) throw new StoreError(400,'讀取筆數無效，或未確認搜尋結果為空。');
   const unique=[...new Map(input.jobs.map(j=>[j.id,j])).values()], profile=JSON.parse(batch.profile) as Profile, at=stamp(), token=crypto.randomUUID();
   const guard="EXISTS (SELECT 1 FROM batches WHERE user_id=? AND id=? AND status='committing' AND commit_token=?)";
   const statements=[db.prepare("UPDATE batches SET status='committing',commit_token=? WHERE user_id=? AND id=? AND status='running'").bind(token,owner,id)];
@@ -56,9 +93,9 @@ export async function finishBatch(db:D1Database,owner:string,id:string,input:{jo
       exclude_source=CASE WHEN jobs.manual=1 THEN jobs.exclude_source ELSE excluded.exclude_source END,
       exclude_reason=CASE WHEN jobs.manual=1 THEN jobs.exclude_reason ELSE excluded.exclude_reason END`).bind(owner,j.id,JSON.stringify(j),j.title,j.company,excluded?'篩除':'未讀取',result.score,JSON.stringify(result),j.publish_time,at,id,excluded?'system':'',excluded,owner,id,token));
   }
-  statements.push(db.prepare(`UPDATE jobs SET status='篩除',exclude_source='system',exclude_reason='本批次排名未進前 10 名',recommend_batch='' WHERE user_id=? AND manual=0 AND recommend_batch=? AND status='未讀取' AND id NOT IN (SELECT id FROM jobs WHERE user_id=? AND manual=0 AND recommend_batch=? AND status='未讀取' ORDER BY score DESC,published DESC,id ASC LIMIT 10) AND ${guard}`).bind(owner,id,owner,id,owner,id,token));
+  statements.push(db.prepare(`UPDATE jobs SET status='篩除',exclude_source='system',exclude_reason=?,recommend_batch='' WHERE user_id=? AND manual=0 AND recommend_batch=? AND status='未讀取' AND id NOT IN (SELECT id FROM jobs WHERE user_id=? AND manual=0 AND recommend_batch=? AND status='未讀取' ORDER BY score DESC,published DESC,id ASC LIMIT ?) AND ${guard}`).bind(`本批次排名未進前 ${batch.requested} 名`,owner,id,owner,id,batch.requested,owner,id,token));
   statements.push(db.prepare(`UPDATE jobs SET recommend_batch='' WHERE user_id=? AND recommend_batch=? AND status='篩除' AND ${guard}`).bind(owner,id,owner,id,token));
-  statements.push(db.prepare("UPDATE batches SET status='done',active=NULL,finished=?,raw=?,imported=? WHERE user_id=? AND id=? AND status='committing' AND commit_token=?").bind(at,input.raw,unique.length,owner,id,token));
+  statements.push(db.prepare("UPDATE batches SET status='done',active=NULL,profile='{}',finished=?,raw=?,imported=? WHERE user_id=? AND id=? AND status='committing' AND commit_token=?").bind(at,input.raw,unique.length,owner,id,token));
   await db.batch(statements); // D1 batches are transactional; no partial import becomes visible.
   const done=await getBatch(db,owner,id);
   if(done.status!=='done') throw new StoreError(409,'更新已取消，請重新更新。');

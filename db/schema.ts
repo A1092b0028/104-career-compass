@@ -17,3 +17,7 @@ export const jobs = sqliteTable('jobs', {
 export const history = sqliteTable('history', {
   id: text('id').primaryKey(), userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }), jobId: text('job_id').notNull(), previous: text('previous').notNull(), status: text('status').notNull(), at: text('at').notNull(),
 }, t => [index('history_owner_job_time').on(t.userId, t.jobId, t.at)]);
+export const aiRequests = sqliteTable('ai_requests', {
+  id: text('id').primaryKey(), userKey: text('user_key').notNull(), started: integer('started').notNull(), expires: integer('expires').notNull(), released: integer('released'),
+}, t => [index('ai_requests_user_started').on(t.userKey, t.started), index('ai_requests_started').on(t.started), index('ai_requests_active').on(t.released, t.expires)]);
+export const maintenance = sqliteTable('maintenance', { key: text('key').primaryKey(), completed: text('completed').notNull() });

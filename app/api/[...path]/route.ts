@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { env } from 'cloudflare:workers';
+import { analyzeResume, AnalysisError } from '@/lib/gemini';
+import type { Job } from '@/lib/matching';
 import { body, database, endpoint, HttpError, identity, json } from '@/lib/server';
 import { profileSchema, finishSchema, states } from '@/lib/validation';
 import * as store from '@/lib/store';
@@ -13,6 +16,16 @@ async function route(request:Request) {
       }
       if(parts[0]==='account' && parts.length===1 && method==='DELETE') {const data=z.object({confirm:z.literal('DELETE')}).strict().parse(await body(request));if(data.confirm){await store.deleteAccount(db,owner);}return json({ok:true});}
       if(parts[0]==='jobs') {
+        if(parts.length===3 && parts[2]==='analysis' && method==='POST') {
+          z.object({}).strict().parse(await body(request));
+          const row=await db.prepare('SELECT data FROM jobs WHERE user_id=? AND id=?').bind(owner,parts[1]).first<{data:string}>();
+          if(!row)throw new HttpError(404,'找不到職缺。');
+          const {profile}=await store.getProfile(db,owner);
+          const key=env.GEMINI_API_KEY, job=JSON.parse(row.data) as Job;
+          const analyze=()=>analyzeResume(profile,job,key,request.signal);
+          if(!profile.resume_text.trim() || !key?.trim()) return json(await analyze());
+          return json(await store.withAnalysisPermit(db,owner,analyze));
+        }
         if(parts.length===1 && method==='GET') return json(await store.listJobs(db,owner,url.searchParams));
         if(parts.length===2 && method==='PATCH') {await store.changeJob(db,owner,parts[1],z.object({status:z.enum(states).optional(),note:z.string().max(3000).optional()}).strict().parse(await body(request)));return json({ok:true});}
         if(parts.length===3 && parts[2]==='history' && method==='GET') return json(await db.prepare('SELECT previous,status,at FROM history WHERE user_id=? AND job_id=? ORDER BY at DESC LIMIT 100').bind(owner,parts[1]).all());
@@ -24,7 +37,7 @@ async function route(request:Request) {
         if(parts.length===3 && parts[2]==='fail' && method==='POST') {const data=z.object({error:z.string().max(300)}).strict().parse(await body(request));await store.failBatch(db,owner,parts[1],data.error);return json({ok:true});}
       }
       throw new HttpError(404,'找不到操作。');
-    } catch(e){if(e instanceof store.StoreError) throw new HttpError(e.status,e.message);throw e;}
+    } catch(e){if(e instanceof store.StoreError||e instanceof AnalysisError) throw new HttpError(e.status,e.message);throw e;}
   });
 }
 export const GET=route; export const POST=route; export const PUT=route; export const PATCH=route; export const DELETE=route;

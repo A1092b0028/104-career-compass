@@ -30,6 +30,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+.dev.vars
+.dev.vars.*
 
 # vercel
 .vercel
@@ -45,3 +47,25 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# Local secrets, personal data and generated artifacts
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.log
+*.zip
+*.tar
+*.tar.gz
+/data/
+/uploads/
+/tmp/
+/temp/
+/.auth/
+/playwright/.auth/
+/test-results/
+/playwright-report/

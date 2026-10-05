@@ -10,12 +10,14 @@ export async function parseResume(file:File):Promise<string>{
   const mammoth=await import('mammoth/mammoth.browser.js');text=(await mammoth.extractRawText({arrayBuffer:data})).value;
  }
  if(ext==='pdf'){
-  const pdfjs=await import('pdfjs-dist'); const worker=await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
-  pdfjs.GlobalWorkerOptions.workerSrc=worker.default;
+  const pdfjs=await import('pdfjs-dist'); const worker=await import('pdfjs-dist/build/pdf.worker.min.mjs?raw');
+  // Keep Vite's browser-only dev client out of the PDF worker.
+  const workerUrl=URL.createObjectURL(new Blob([worker.default],{type:'text/javascript'}));
+  pdfjs.GlobalWorkerOptions.workerSrc=workerUrl;
   const task=pdfjs.getDocument({data,disableFontFace:true,useSystemFonts:true});
   try{const doc=await task.promise;if(doc.numPages>200)throw Error('PDF 超過 200 頁，請改用精簡履歷。');
    for(let i=1;i<=doc.numPages;i++){const p=await doc.getPage(i),content=await p.getTextContent();text+=content.items.map(item=>'str'in item?item.str+('hasEOL'in item&&item.hasEOL?'\n':' '):'').join('')+'\n';if(text.length>100000)throw Error('履歷文字超過 100,000 字，請先精簡。');}
-  }finally{await task.destroy();}
+  }finally{try{await task.destroy();}finally{URL.revokeObjectURL(workerUrl);}}
  }
  text=text.trim();if(!text)throw Error('未辨識出文字；掃描圖片或加密文件請改貼履歷文字。');if(text.length>100000)throw Error('履歷文字超過 100,000 字，請先精簡。');return text;
 }
